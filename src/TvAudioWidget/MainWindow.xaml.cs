@@ -293,7 +293,7 @@ public partial class MainWindow : Window
         SaveSettings();
     }
 
-    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    private void Window_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
         switch (e.Key)
         {
