@@ -1,0 +1,51 @@
+name: Build portable Windows package
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore .\src\TvAudioWidget\TvAudioWidget.csproj
+
+      - name: Build
+        run: dotnet build .\src\TvAudioWidget\TvAudioWidget.csproj -c Release --no-restore
+
+      - name: Publish self-contained win-x64
+        run: >
+          dotnet publish .\src\TvAudioWidget\TvAudioWidget.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -o .\publish\win-x64
+
+      - name: Create ZIP
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path .\artifacts | Out-Null
+          Compress-Archive -Path .\publish\win-x64\* -DestinationPath .\artifacts\tv-audio-widget-win-x64.zip -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tv-audio-widget-win-x64
+          path: .\artifacts\tv-audio-widget-win-x64.zip

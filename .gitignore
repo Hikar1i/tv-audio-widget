@@ -1,0 +1,10 @@
+bin/
+obj/
+.vs/
+.vscode/
+publish/
+artifacts/
+config.json
+.superpowers/
+*.user
+*.suo
