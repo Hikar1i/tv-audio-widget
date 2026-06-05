@@ -24,7 +24,7 @@ public sealed class ThemeService
 
     public static SolidColorBrush BrushFromHex(string hex, double opacity = 1)
     {
-        var color = (Color)ColorConverter.ConvertFromString(hex);
+        var color = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex);
         color.A = (byte)Math.Round(Math.Clamp(opacity, 0, 1) * 255);
         var brush = new SolidColorBrush(color);
         brush.Freeze();

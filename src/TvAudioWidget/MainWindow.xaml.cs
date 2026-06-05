@@ -183,7 +183,7 @@ public partial class MainWindow : Window
 
     private void DeviceButton_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button { Tag: string deviceId })
+        if (sender is not System.Windows.Controls.Button { Tag: string deviceId })
         {
             return;
         }
