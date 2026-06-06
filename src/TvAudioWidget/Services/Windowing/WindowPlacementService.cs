@@ -12,23 +12,57 @@ public sealed class WindowPlacementService
     public void ApplyStartupPlacement(Window window, string? lastScreenDeviceName)
     {
         var screen = ChooseScreen(lastScreenDeviceName);
+        ApplyMaximizedBounds(window, screen);
+        window.WindowStartupLocation = WindowStartupLocation.Manual;
+        ApplyNormalPlacement(window, screen);
+    }
+
+    public void FitToCurrentScreen(Window window)
+    {
+        var screen = GetCurrentScreen(window);
+        ApplyMaximizedBounds(window, screen);
+        if (window.WindowState == WindowState.Maximized)
+        {
+            return;
+        }
+
+        ApplyNormalPlacement(window, screen);
+    }
+
+    public void ApplyCurrentScreenMaximizedBounds(Window window)
+    {
+        ApplyMaximizedBounds(window, GetCurrentScreen(window));
+    }
+
+    private static void ApplyNormalPlacement(Window window, MonitorInfo screen)
+    {
         var bounds = screen.WorkArea;
         var width = Math.Min(Math.Max(bounds.Width * 0.92, Math.Min(900, bounds.Width)), bounds.Width);
         var height = Math.Min(Math.Max(bounds.Height * 0.90, Math.Min(560, bounds.Height)), bounds.Height);
 
-        window.WindowStartupLocation = WindowStartupLocation.Manual;
         window.Width = width;
         window.Height = height;
         window.Left = bounds.Left + (bounds.Width - width) / 2;
         window.Top = bounds.Top + (bounds.Height - height) / 2;
     }
 
+    private static void ApplyMaximizedBounds(Window window, MonitorInfo screen)
+    {
+        window.MaxWidth = screen.WorkArea.Width;
+        window.MaxHeight = screen.WorkArea.Height;
+    }
+
     public string? GetCurrentScreenDeviceName(Window window)
+    {
+        return GetCurrentScreen(window).DeviceName;
+    }
+
+    private static MonitorInfo GetCurrentScreen(Window window)
     {
         var handle = new WindowInteropHelper(window).Handle;
         return handle != IntPtr.Zero
-            ? GetMonitorFromWindow(handle).DeviceName
-            : GetMonitorFromCursor().DeviceName;
+            ? GetMonitorFromWindow(handle)
+            : GetMonitorFromCursor();
     }
 
     private static MonitorInfo ChooseScreen(string? lastScreenDeviceName)

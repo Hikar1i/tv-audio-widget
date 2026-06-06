@@ -1,7 +1,10 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Media;
 using System.Windows.Threading;
 using TvAudioWidget.Models;
 using TvAudioWidget.Services.Audio;
@@ -13,13 +16,23 @@ namespace TvAudioWidget;
 
 public partial class MainWindow : Window
 {
+    private const int WmDisplayChange = 0x007E;
+    private const int WmExitSizeMove = 0x0232;
+    private const double DeviceCardOuterMargin = 24;
+    private const double DeviceCardTargetOuterWidth = 390;
+    private const double DeviceCardMinWidth = 260;
+    private const double DeviceCardMaxWidth = 420;
+
     private readonly IAudioDeviceService _audioService;
     private readonly ISettingsStore _settingsStore;
     private readonly WindowPlacementService _windowPlacementService;
     private readonly ThemeService _themeService;
     private readonly DispatcherTimer _refreshTimer;
+    private readonly DispatcherTimer _screenChangeTimer;
     private readonly IReadOnlyList<ThemeDefinition> _themes;
     private AppSettings _settings = AppSettings.Default();
+    private HwndSource? _windowSource;
+    private string? _currentScreenDeviceName;
     private bool _uiReady;
     private bool _suppressSettingsSave;
     private bool _suppressVolumeChange;
@@ -27,6 +40,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Resources["DeviceCardWidth"] = 360d;
 
         _audioService = new WindowsAudioDeviceService();
         _settingsStore = new JsonSettingsStore();
@@ -44,8 +58,21 @@ public partial class MainWindow : Window
         };
         _refreshTimer.Tick += (_, _) => RefreshAudioState(showSuccess: false);
 
+        _screenChangeTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(250)
+        };
+        _screenChangeTimer.Tick += (_, _) =>
+        {
+            _screenChangeTimer.Stop();
+            CheckForScreenChange();
+        };
+
+        SourceInitialized += MainWindow_SourceInitialized;
         Loaded += MainWindow_Loaded;
         Closing += MainWindow_Closing;
+        LocationChanged += (_, _) => QueueScreenChangeCheck();
+        StateChanged += MainWindow_StateChanged;
 
         InitializeSettingsUi();
         ApplyTheme();
@@ -58,12 +85,23 @@ public partial class MainWindow : Window
 
     private void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
+        _currentScreenDeviceName = _windowPlacementService.GetCurrentScreenDeviceName(this);
+        _windowPlacementService.ApplyCurrentScreenMaximizedBounds(this);
+        UpdateMaximizeRestoreButton();
+        UpdateDeviceCardWidth();
         RefreshAudioState(showSuccess: false);
         _refreshTimer.Start();
     }
 
+    private void MainWindow_SourceInitialized(object? sender, EventArgs e)
+    {
+        _windowSource = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
+        _windowSource?.AddHook(WindowMessageHook);
+    }
+
     private void MainWindow_Closing(object? sender, CancelEventArgs e)
     {
+        _windowSource?.RemoveHook(WindowMessageHook);
         _refreshTimer.Stop();
         _settings.LastScreenDeviceName = _windowPlacementService.GetCurrentScreenDeviceName(this);
         _ = _settingsStore.Save(_settings);
@@ -210,6 +248,18 @@ public partial class MainWindow : Window
         SettingsPanel.Visibility = SettingsPanel.Visibility == Visibility.Visible
             ? Visibility.Collapsed
             : Visibility.Visible;
+
+        Dispatcher.BeginInvoke((Action)UpdateDeviceCardWidth, DispatcherPriority.Loaded);
+    }
+
+    private void MinimizeButton_Click(object sender, RoutedEventArgs e)
+    {
+        WindowState = WindowState.Minimized;
+    }
+
+    private void MaximizeRestoreButton_Click(object sender, RoutedEventArgs e)
+    {
+        ToggleMaximizeRestore();
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
@@ -293,6 +343,28 @@ public partial class MainWindow : Window
         SaveSettings();
     }
 
+    private void HeaderBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left || FindAncestor<ButtonBase>(e.OriginalSource as DependencyObject) is not null)
+        {
+            return;
+        }
+
+        if (e.ClickCount == 2)
+        {
+            ToggleMaximizeRestore();
+            e.Handled = true;
+            return;
+        }
+
+        BeginWindowDrag(e);
+    }
+
+    private void DeviceScrollViewer_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        UpdateDeviceCardWidth();
+    }
+
     private void Window_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
         switch (e.Key)
@@ -312,5 +384,163 @@ public partial class MainWindow : Window
                 e.Handled = true;
                 break;
         }
+    }
+
+    private void MainWindow_StateChanged(object? sender, EventArgs e)
+    {
+        if (WindowState != WindowState.Minimized)
+        {
+            _windowPlacementService.ApplyCurrentScreenMaximizedBounds(this);
+            CheckForScreenChange();
+            Dispatcher.BeginInvoke((Action)UpdateDeviceCardWidth, DispatcherPriority.Loaded);
+        }
+
+        UpdateMaximizeRestoreButton();
+    }
+
+    private IntPtr WindowMessageHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == WmExitSizeMove || msg == WmDisplayChange)
+        {
+            CheckForScreenChange();
+            Dispatcher.BeginInvoke((Action)UpdateDeviceCardWidth, DispatcherPriority.Loaded);
+        }
+
+        return IntPtr.Zero;
+    }
+
+    private void BeginWindowDrag(MouseButtonEventArgs e)
+    {
+        if (WindowState == WindowState.Maximized)
+        {
+            RestoreWindowForDrag(e);
+        }
+
+        try
+        {
+            DragMove();
+            CheckForScreenChange();
+        }
+        catch (InvalidOperationException)
+        {
+            // DragMove can fail if the mouse capture is lost before WPF starts the drag.
+        }
+    }
+
+    private void RestoreWindowForDrag(MouseButtonEventArgs e)
+    {
+        var headerPosition = e.GetPosition(this);
+        var screenPosition = PointToScreen(headerPosition);
+        var horizontalRatio = headerPosition.X / Math.Max(ActualWidth, 1);
+
+        WindowState = WindowState.Normal;
+        Left = screenPosition.X - Width * horizontalRatio;
+        Top = screenPosition.Y - 28;
+    }
+
+    private void ToggleMaximizeRestore()
+    {
+        if (WindowState == WindowState.Maximized)
+        {
+            WindowState = WindowState.Normal;
+            return;
+        }
+
+        _windowPlacementService.ApplyCurrentScreenMaximizedBounds(this);
+        WindowState = WindowState.Maximized;
+    }
+
+    private void UpdateMaximizeRestoreButton()
+    {
+        if (MaximizeRestoreButton is null)
+        {
+            return;
+        }
+
+        if (WindowState == WindowState.Maximized)
+        {
+            MaximizeRestoreButton.Content = "\uE923";
+            MaximizeRestoreButton.ToolTip = "还原";
+        }
+        else
+        {
+            MaximizeRestoreButton.Content = "\uE922";
+            MaximizeRestoreButton.ToolTip = "最大化";
+        }
+    }
+
+    private void QueueScreenChangeCheck()
+    {
+        if (!IsLoaded || WindowState == WindowState.Minimized)
+        {
+            return;
+        }
+
+        _screenChangeTimer.Stop();
+        _screenChangeTimer.Start();
+    }
+
+    private void CheckForScreenChange()
+    {
+        if (!IsLoaded || WindowState == WindowState.Minimized)
+        {
+            return;
+        }
+
+        var screenDeviceName = _windowPlacementService.GetCurrentScreenDeviceName(this);
+        if (_currentScreenDeviceName is null)
+        {
+            _currentScreenDeviceName = screenDeviceName;
+            _windowPlacementService.ApplyCurrentScreenMaximizedBounds(this);
+            return;
+        }
+
+        if (string.Equals(_currentScreenDeviceName, screenDeviceName, StringComparison.OrdinalIgnoreCase))
+        {
+            _windowPlacementService.ApplyCurrentScreenMaximizedBounds(this);
+            return;
+        }
+
+        _currentScreenDeviceName = screenDeviceName;
+        _windowPlacementService.FitToCurrentScreen(this);
+        UpdateDeviceCardWidth();
+    }
+
+    private void UpdateDeviceCardWidth()
+    {
+        var availableWidth = DeviceScrollViewer.ActualWidth;
+        if (availableWidth <= 0)
+        {
+            return;
+        }
+
+        var columns = Math.Clamp((int)Math.Floor(availableWidth / DeviceCardTargetOuterWidth), 1, 8);
+        var cardWidth = Math.Clamp(
+            availableWidth / columns - DeviceCardOuterMargin,
+            DeviceCardMinWidth,
+            DeviceCardMaxWidth);
+
+        Resources["DeviceCardWidth"] = cardWidth;
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? source) where T : DependencyObject
+    {
+        while (source is not null)
+        {
+            if (source is T match)
+            {
+                return match;
+            }
+
+            source = source switch
+            {
+                Visual or System.Windows.Media.Media3D.Visual3D => VisualTreeHelper.GetParent(source),
+                FrameworkElement element => element.Parent,
+                FrameworkContentElement contentElement => contentElement.Parent,
+                _ => null
+            };
+        }
+
+        return null;
     }
 }
