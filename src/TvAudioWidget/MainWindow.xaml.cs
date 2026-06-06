@@ -534,9 +534,9 @@ public partial class MainWindow : Window
 
             source = source switch
             {
-                Visual or System.Windows.Media.Media3D.Visual3D => VisualTreeHelper.GetParent(source),
                 FrameworkElement element => element.Parent,
                 FrameworkContentElement contentElement => contentElement.Parent,
+                Visual or System.Windows.Media.Media3D.Visual3D => VisualTreeHelper.GetParent(source),
                 _ => null
             };
         }
